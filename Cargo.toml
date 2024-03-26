@@ -1,0 +1,6 @@
+[workspace]
+
+members = [ "peer",
+    "src",
+]
+resolver = "2"
