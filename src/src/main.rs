@@ -6,7 +6,7 @@ struct Args {
     /// period for message sending in seconds
     #[arg(long, default_value_t = 1)]
     period: u32,
-    /// Port where peer starts
+    /// Port where node starts
     #[arg(long)]
     port: String,
     /// Socket address to connect

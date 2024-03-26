@@ -1,6 +1,7 @@
 [workspace]
 
-members = [ "peer",
+members = [
+    "node",
     "src",
 ]
 resolver = "2"
