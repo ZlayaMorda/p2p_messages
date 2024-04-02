@@ -2,12 +2,12 @@ use crate::errors::NodeError;
 use crate::errors::NodeError::{ItselfConnectionError, PeriodValueError, TcpClosedError};
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Interval;
-use tokio::{sync::Mutex, time};
+use tokio::{ time };
 
 /// NodeBuilder provides more flexible creation of Node with different input data
 pub struct NodeBuilder {
@@ -27,37 +27,37 @@ impl NodeBuilder {
         }
     }
 
-    pub async fn address(self, address: String) -> NodeBuilder {
-        *self.address.lock().await = address;
+    pub fn address(self, address: String) -> NodeBuilder {
+        *self.address.lock().expect("Error while lock address") = address;
         self
     }
 
-    pub async fn port(self, port: String) -> NodeBuilder {
-        *self.port.lock().await = port;
+    pub fn port(self, port: String) -> NodeBuilder {
+        *self.port.lock().expect("Error while lock port") = port;
         self
     }
 
-    pub async fn period(self, period: u64) -> Result<NodeBuilder, NodeError> {
+    pub fn period(self, period: u64) -> Result<NodeBuilder, NodeError> {
         if period == 0 {
             return Err(PeriodValueError);
         }
-        *self.period.lock().await = period;
+        *self.period.lock().expect("Error while lock period") = period;
         Ok(self)
     }
 
-    pub async fn add_connection(
+    pub fn add_connection(
         self,
         address: String,
         connected_to_address: HashSet<String>,
     ) -> NodeBuilder {
         self.connections
             .lock()
-            .await
+            .expect("Error while lock connections")          
             .insert(address, connected_to_address);
         self
     }
 
-    pub async fn build(self) -> Node {
+    pub fn build(self) -> Node {
         Node {
             address: self.address,
             port: self.port,
@@ -79,8 +79,8 @@ impl Node {
     pub async fn bind_address(&self) -> Result<TcpListener, NodeError> {
         Ok(TcpListener::bind(format!(
             "{}:{}",
-            self.address.lock().await,
-            self.port.lock().await
+            self.address.lock().expect("Error while lock address"),
+            self.port.lock().expect("Error while lock port")
         ))
         .await?)
     }
@@ -90,8 +90,8 @@ impl Node {
         if let Some(address_to) = address_to {
             if format!(
                 "{}:{}",
-                self.address.lock().await,
-                self.port.lock().await
+                self.address.lock().expect("Error while lock address"),
+                self.port.lock().expect("Error while lock port")
             ) == address_to { return Err(ItselfConnectionError) }
                 let stream = TcpStream::connect(&address_to).await?;
             self._handle_thread(stream).await;
@@ -114,7 +114,7 @@ impl Node {
     pub(crate) async fn _handle_thread(self: Arc<Self>, stream: TcpStream) {
         tokio::spawn(async move {
             let (reader, writer) = stream.into_split();
-            let mut interval = time::interval(Duration::from_secs(*self.period.lock().await));
+            let mut interval = time::interval(Duration::from_secs(*self.period.lock().expect("Error while lock period")));
             loop {
                 self._handle_writing(&writer, &mut interval).await;
                 match self._handle_reading(&reader) {
@@ -152,8 +152,8 @@ impl Node {
         let str_message = format!(
             "{} - Message from {}:{}",
             Utc::now().timestamp(),
-            self.address.lock().await,
-            self.port.lock().await
+            self.address.lock().expect("Error while lock address"),
+            self.port.lock().expect("Error while lock port")
         );
         let message: &[u8] = str_message.as_bytes();
         let length: [u8; 8] = message.len().to_ne_bytes();

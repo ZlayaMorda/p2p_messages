@@ -25,13 +25,9 @@ async fn main() -> Result<(), NodeError> {
     let node: Arc<Node> = Arc::new(
         NodeBuilder::new()
             .address(String::from("127.0.0.1"))
-            .await
             .port(args.port)
-            .await
-            .period(10)
-            .await?
+            .period(10)?
             .build()
-            .await,
     );
 
     let listener: TcpListener = node.bind_address().await?;
