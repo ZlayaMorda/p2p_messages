@@ -131,7 +131,7 @@ impl Node {
         let mut buf: Vec<u8> = vec![0; 2048];
         match reader.try_read(&mut buf) {
             Ok(n) => {
-                self.read_messages(n, &mut buf)
+                self._read_messages(n, &mut buf)
             }
             Err(err) => Err(NodeError::from(err)),
         }
@@ -140,7 +140,7 @@ impl Node {
     //TODO change for logs and error handling
     pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, interval: &mut Interval) {
         if let Err(error) = writer.try_write(
-            &self.create_message().await
+            &self._create_message().await
         ) {
             println!("Error while try to write {error}");
         }
@@ -148,7 +148,7 @@ impl Node {
     }
 
     /// implemented only for a 64-bit memory systems
-    pub(crate) async fn create_message(&self) -> Vec<u8> {
+    pub(crate) async fn _create_message(&self) -> Vec<u8> {
         let str_message = format!(
             "{} - Message from {}:{}",
             Utc::now().timestamp(),
@@ -161,7 +161,7 @@ impl Node {
     }
 
     /// implemented only for a 64-bit memory systems
-    pub(crate) fn read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError>{
+    pub(crate) fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError>{
         if n == 0 {
             // Connection closed
             println!("Connection closed");
