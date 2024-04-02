@@ -5,7 +5,9 @@ pub enum NodeError {
     #[error("{0}")]
     IoError(#[from] std::io::Error),
     #[error("Connection closed")]
-    TcpClosedError(),
+    TcpClosedError,
     #[error("Period must be more than 0")]
-    PeriodValueError(),
+    PeriodValueError,
+    #[error("Must not connect to itself")]
+    ItselfConnectionError,
 }
