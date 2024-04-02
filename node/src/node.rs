@@ -6,13 +6,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time;
 use tokio::time::Interval;
-use tokio::{ time };
 
 /// NodeBuilder provides more flexible creation of Node with different input data
 pub struct NodeBuilder {
     address: Mutex<String>,
-    port: Mutex<String>,
+    port: Mutex<u16>,
     period: Mutex<u64>,
     connections: Mutex<HashMap<String, HashSet<String>>>,
 }
@@ -21,7 +21,7 @@ impl NodeBuilder {
     pub fn new() -> NodeBuilder {
         NodeBuilder {
             address: Mutex::new(String::new()),
-            port: Mutex::new(String::new()),
+            port: Mutex::new(8080_u16),
             period: Mutex::new(5_u64),
             connections: Mutex::new(HashMap::new()),
         }
@@ -32,7 +32,7 @@ impl NodeBuilder {
         self
     }
 
-    pub fn port(self, port: String) -> NodeBuilder {
+    pub fn port(self, port: u16) -> NodeBuilder {
         *self.port.lock().expect("Error while lock port") = port;
         self
     }
@@ -52,7 +52,7 @@ impl NodeBuilder {
     ) -> NodeBuilder {
         self.connections
             .lock()
-            .expect("Error while lock connections")          
+            .expect("Error while lock connections")
             .insert(address, connected_to_address);
         self
     }
@@ -69,7 +69,7 @@ impl NodeBuilder {
 
 pub struct Node {
     address: Mutex<String>,
-    port: Mutex<String>,
+    port: Mutex<u16>,
     period: Mutex<u64>,
     connections: Mutex<HashMap<String, HashSet<String>>>, // TODO handling connections, may be using ids
                                                           // TODO handling messages
@@ -92,8 +92,11 @@ impl Node {
                 "{}:{}",
                 self.address.lock().expect("Error while lock address"),
                 self.port.lock().expect("Error while lock port")
-            ) == address_to { return Err(ItselfConnectionError) }
-                let stream = TcpStream::connect(&address_to).await?;
+            ) == address_to
+            {
+                return Err(ItselfConnectionError);
+            }
+            let stream = TcpStream::connect(&address_to).await?;
             self._handle_thread(stream).await;
         }
         Ok(())
@@ -114,7 +117,9 @@ impl Node {
     pub(crate) async fn _handle_thread(self: Arc<Self>, stream: TcpStream) {
         tokio::spawn(async move {
             let (reader, writer) = stream.into_split();
-            let mut interval = time::interval(Duration::from_secs(*self.period.lock().expect("Error while lock period")));
+            let mut interval = time::interval(Duration::from_secs(
+                *self.period.lock().expect("Error while lock period"),
+            ));
             loop {
                 self._handle_writing(&writer, &mut interval).await;
                 match self._handle_reading(&reader) {
@@ -130,18 +135,14 @@ impl Node {
     pub(crate) fn _handle_reading(&self, reader: &OwnedReadHalf) -> Result<(), NodeError> {
         let mut buf: Vec<u8> = vec![0; 2048];
         match reader.try_read(&mut buf) {
-            Ok(n) => {
-                self._read_messages(n, &mut buf)
-            }
+            Ok(n) => self._read_messages(n, &mut buf),
             Err(err) => Err(NodeError::from(err)),
         }
     }
 
     //TODO change for logs and error handling
     pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, interval: &mut Interval) {
-        if let Err(error) = writer.try_write(
-            &self._create_message().await
-        ) {
+        if let Err(error) = writer.try_write(&self._create_message().await) {
             println!("Error while try to write {error}");
         }
         interval.tick().await;
@@ -161,7 +162,7 @@ impl Node {
     }
 
     /// implemented only for a 64-bit memory systems
-    pub(crate) fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError>{
+    pub(crate) fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
         if n == 0 {
             // Connection closed
             println!("Connection closed");
@@ -175,7 +176,7 @@ impl Node {
             }
 
             let message = rest[..msg_len].to_vec();
-            println!("{}",  String::from_utf8_lossy(&message).trim().to_string());
+            println!("{}", String::from_utf8_lossy(&message).trim().to_string());
 
             buf.drain(..8 + msg_len);
         }

@@ -12,7 +12,7 @@ struct Args {
     period: u64,
     /// Port where node starts
     #[arg(long)]
-    port: String,
+    port: u16,
     /// Socket address to connect
     #[arg(short, long)]
     connect: Option<String>,
@@ -27,7 +27,7 @@ async fn main() -> Result<(), NodeError> {
             .address(String::from("127.0.0.1"))
             .port(args.port)
             .period(10)?
-            .build()
+            .build(),
     );
 
     let listener: TcpListener = node.bind_address().await?;
