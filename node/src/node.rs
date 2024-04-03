@@ -1,6 +1,6 @@
 use crate::errors::NodeError;
 use crate::errors::NodeError::{ItselfConnectionError, PeriodValueError, TcpClosedError};
-use chrono::Utc;
+use crate::message::Message64;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -78,23 +78,13 @@ pub struct Node {
 
 impl Node {
     pub async fn bind_address(&self) -> Result<TcpListener, NodeError> {
-        Ok(TcpListener::bind(format!(
-            "{}:{}",
-            self.address,
-            self.port
-        ))
-        .await?)
+        Ok(TcpListener::bind(format!("{}:{}", self.address, self.port)).await?)
     }
 
     //TODO change for logs and error handling
     pub async fn connect_to(self: Arc<Self>, address_to: Option<String>) -> Result<(), NodeError> {
         if let Some(address_to) = address_to {
-            if format!(
-                "{}:{}",
-                self.address,
-                self.port
-            ) == address_to
-            {
+            if format!("{}:{}", self.address, self.port) == address_to {
                 return Err(ItselfConnectionError);
             }
             let stream = TcpStream::connect(&address_to).await?;
@@ -144,46 +134,22 @@ impl Node {
 
     //TODO change for logs and error handling
     pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, interval: &mut Interval) {
-        if let Err(error) = writer.try_write(&self._create_message().await) {
+        if let Err(error) =
+            writer.try_write(&Message64::create_random_message(&self.address, self.port))
+        {
             tracing::warn!("Error while try to write {error}");
         }
         interval.tick().await;
     }
-
-    /// implemented only for a 64-bit memory systems
-    pub(crate) async fn _create_message(&self) -> Vec<u8> {
-        tracing::debug!("Creating message to send");
-        let str_message = format!(
-            "{} - Message from {}:{}",
-            Utc::now().timestamp(),
-            self.address,
-            self.port
-        );
-        let message: &[u8] = str_message.as_bytes();
-        let length: [u8; 8] = message.len().to_ne_bytes();
-        [&length, message].concat()
-    }
-
-    /// implemented only for a 64-bit memory systems
-    pub(crate) fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
+    
+    fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
         tracing::debug!("Reading message of size {n}");
         if n == 0 {
-            // Connection closed
             tracing::warn!("Connection closed");
             return Err(TcpClosedError);
         }
 
-        while let Some((msg_len_bytes, rest)) = buf.split_first_chunk::<8>() {
-            let msg_len = usize::from_ne_bytes(*msg_len_bytes);
-            if rest.len() < msg_len || msg_len == 0 {
-                break;
-            }
-
-            let message = rest[..msg_len].to_vec();
-            println!("{}", String::from_utf8_lossy(&message).trim().to_string());
-
-            buf.drain(..8 + msg_len);
-        }
+        Message64::read_messages(buf);
         Ok(())
     }
 }

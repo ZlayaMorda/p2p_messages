@@ -11,5 +11,5 @@ pub enum NodeError {
     #[error("Tried connect itself")]
     ItselfConnectionError,
     #[error("{0}")]
-    TracingSubscriberError(#[from] tracing::subscriber::SetGlobalDefaultError)
+    TracingSubscriberError(#[from] tracing::subscriber::SetGlobalDefaultError),
 }
