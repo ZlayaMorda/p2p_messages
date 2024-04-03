@@ -11,8 +11,8 @@ use tokio::time::Interval;
 
 /// NodeBuilder provides more flexible creation of Node with different input data
 pub struct NodeBuilder {
-    address: Mutex<String>,
-    port: Mutex<u16>,
+    address: String,
+    port: u16,
     period: Mutex<u64>,
     connections: Mutex<HashMap<String, HashSet<String>>>,
 }
@@ -20,20 +20,20 @@ pub struct NodeBuilder {
 impl NodeBuilder {
     pub fn new() -> NodeBuilder {
         NodeBuilder {
-            address: Mutex::new(String::new()),
-            port: Mutex::new(8080_u16),
+            address: String::new(),
+            port: 8080_u16,
             period: Mutex::new(5_u64),
             connections: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn address(self, address: String) -> NodeBuilder {
-        *self.address.lock().expect("Error while lock address") = address;
+    pub fn address(mut self, address: String) -> NodeBuilder {
+        self.address = address;
         self
     }
 
-    pub fn port(self, port: u16) -> NodeBuilder {
-        *self.port.lock().expect("Error while lock port") = port;
+    pub fn port(mut self, port: u16) -> NodeBuilder {
+        self.port = port;
         self
     }
 
@@ -69,8 +69,8 @@ impl NodeBuilder {
 
 #[derive(Debug)]
 pub struct Node {
-    address: Mutex<String>,
-    port: Mutex<u16>,
+    address: String,
+    port: u16,
     period: Mutex<u64>,
     connections: Mutex<HashMap<String, HashSet<String>>>, // TODO handling connections, may be using ids
                                                           // TODO handling messages
@@ -80,8 +80,8 @@ impl Node {
     pub async fn bind_address(&self) -> Result<TcpListener, NodeError> {
         Ok(TcpListener::bind(format!(
             "{}:{}",
-            self.address.lock().expect("Error while lock address"),
-            self.port.lock().expect("Error while lock port")
+            self.address,
+            self.port
         ))
         .await?)
     }
@@ -91,8 +91,8 @@ impl Node {
         if let Some(address_to) = address_to {
             if format!(
                 "{}:{}",
-                self.address.lock().expect("Error while lock address"),
-                self.port.lock().expect("Error while lock port")
+                self.address,
+                self.port
             ) == address_to
             {
                 return Err(ItselfConnectionError);
@@ -126,7 +126,7 @@ impl Node {
                 self._handle_writing(&writer, &mut interval).await;
                 match self._handle_reading(&reader) {
                     Ok(_) => continue,
-                    Err(TcpClosedError) => break, // TODO timeout
+                    Err(TcpClosedError) => break,
                     Err(_) => continue,
                 }
             }
@@ -156,8 +156,8 @@ impl Node {
         let str_message = format!(
             "{} - Message from {}:{}",
             Utc::now().timestamp(),
-            self.address.lock().expect("Error while lock address"),
-            self.port.lock().expect("Error while lock port")
+            self.address,
+            self.port
         );
         let message: &[u8] = str_message.as_bytes();
         let length: [u8; 8] = message.len().to_ne_bytes();
