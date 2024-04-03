@@ -67,6 +67,7 @@ impl NodeBuilder {
     }
 }
 
+#[derive(Debug)]
 pub struct Node {
     address: Mutex<String>,
     port: Mutex<u16>,
@@ -97,19 +98,20 @@ impl Node {
                 return Err(ItselfConnectionError);
             }
             let stream = TcpStream::connect(&address_to).await?;
+            tracing::info!("connected to {}", address_to);
             self._handle_thread(stream).await;
         }
         Ok(())
     }
 
     //TODO change for logs and error handling
-    pub async fn handle_connections(
+    pub async fn listen_connections(
         self: Arc<Self>,
         listener: &TcpListener,
     ) -> Result<(), NodeError> {
         loop {
             let (stream, socket_address) = listener.accept().await?;
-            println!("new client {socket_address}");
+            tracing::info!("connected new client {socket_address}");
             self.clone()._handle_thread(stream).await;
         }
     }
@@ -143,13 +145,14 @@ impl Node {
     //TODO change for logs and error handling
     pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, interval: &mut Interval) {
         if let Err(error) = writer.try_write(&self._create_message().await) {
-            println!("Error while try to write {error}");
+            tracing::warn!("Error while try to write {error}");
         }
         interval.tick().await;
     }
 
     /// implemented only for a 64-bit memory systems
     pub(crate) async fn _create_message(&self) -> Vec<u8> {
+        tracing::debug!("Creating message to send");
         let str_message = format!(
             "{} - Message from {}:{}",
             Utc::now().timestamp(),
@@ -163,9 +166,10 @@ impl Node {
 
     /// implemented only for a 64-bit memory systems
     pub(crate) fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
+        tracing::debug!("Reading message of size {n}");
         if n == 0 {
             // Connection closed
-            println!("Connection closed");
+            tracing::warn!("Connection closed");
             return Err(TcpClosedError);
         }
 

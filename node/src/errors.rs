@@ -6,8 +6,10 @@ pub enum NodeError {
     IoError(#[from] std::io::Error),
     #[error("Connection closed")]
     TcpClosedError,
-    #[error("Period must be more than 0")]
+    #[error("Period set to not correct value")]
     PeriodValueError,
-    #[error("Must not connect to itself")]
+    #[error("Tried connect itself")]
     ItselfConnectionError,
+    #[error("{0}")]
+    TracingSubscriberError(#[from] tracing::subscriber::SetGlobalDefaultError)
 }

@@ -3,6 +3,8 @@ use node::errors::NodeError;
 use node::node::{Node, NodeBuilder};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -22,6 +24,12 @@ struct Args {
 async fn main() -> Result<(), NodeError> {
     let args: Args = Args::parse();
 
+    let subscriber = tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(Level::DEBUG)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber)?;
+
     let node: Arc<Node> = Arc::new(
         NodeBuilder::new()
             .address(String::from("127.0.0.1"))
@@ -33,6 +41,6 @@ async fn main() -> Result<(), NodeError> {
     let listener: TcpListener = node.bind_address().await?;
 
     node.clone().connect_to(args.connect).await?;
-    node.handle_connections(&listener).await?;
+    node.listen_connections(&listener).await?;
     Ok(())
 }
