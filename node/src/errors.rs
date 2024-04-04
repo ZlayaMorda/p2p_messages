@@ -6,6 +6,8 @@ pub enum NodeError {
     IoError(#[from] std::io::Error),
     #[error("Connection closed")]
     TcpClosedError,
+    #[error("Write error")]
+    TcpWriteError,
     #[error("Period set to not correct value")]
     PeriodValueError,
     #[error("Tried connect itself")]

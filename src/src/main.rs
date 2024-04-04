@@ -4,7 +4,6 @@ use node::node::{Node, NodeBuilder};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::Level;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -34,7 +33,7 @@ async fn main() -> Result<(), NodeError> {
         NodeBuilder::new()
             .address(String::from("127.0.0.1"))
             .port(args.port)
-            .period(10)?
+            .period(args.period)?
             .build(),
     );
 

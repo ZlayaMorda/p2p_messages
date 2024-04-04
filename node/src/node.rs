@@ -1,20 +1,23 @@
 use crate::errors::NodeError;
 use crate::errors::NodeError::{ItselfConnectionError, PeriodValueError, TcpClosedError};
 use crate::message::Message64;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::AsyncReadExt;
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
 use tokio::time::Interval;
+
+const CONNECTION_TIMEOUT: u64 = 10;
 
 /// NodeBuilder provides more flexible creation of Node with different input data
 pub struct NodeBuilder {
     address: String,
     port: u16,
     period: Mutex<u64>,
-    connections: Mutex<HashMap<String, HashSet<String>>>,
+    connections: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl NodeBuilder {
@@ -48,7 +51,7 @@ impl NodeBuilder {
     pub fn add_connection(
         self,
         address: String,
-        connected_to_address: HashSet<String>,
+        connected_to_address: Option<String>,
     ) -> NodeBuilder {
         self.connections
             .lock()
@@ -72,8 +75,8 @@ pub struct Node {
     address: String,
     port: u16,
     period: Mutex<u64>,
-    connections: Mutex<HashMap<String, HashSet<String>>>, // TODO handling connections, may be using ids
-                                                          // TODO handling messages
+    connections: Mutex<HashMap<String, Option<String>>>, // TODO handling connections, may be using ids
+                                                         // TODO handling messages
 }
 
 impl Node {
@@ -81,67 +84,66 @@ impl Node {
         Ok(TcpListener::bind(format!("{}:{}", self.address, self.port)).await?)
     }
 
-    //TODO change for logs and error handling
     pub async fn connect_to(self: Arc<Self>, address_to: Option<String>) -> Result<(), NodeError> {
         if let Some(address_to) = address_to {
             if format!("{}:{}", self.address, self.port) == address_to {
                 return Err(ItselfConnectionError);
             }
-            let stream = TcpStream::connect(&address_to).await?;
-            tracing::info!("connected to {}", address_to);
-            self._handle_thread(stream).await;
+            let stream: TcpStream = TcpStream::connect(&address_to).await?;
+            tracing::debug!("connected to {}", address_to);
+            self.connections
+                .lock()
+                .expect("Error while lock connections")
+                .insert(address_to.clone(), None);
+            let _ = tokio::spawn(self.clone()._handle_thread(stream)).await;
         }
         Ok(())
     }
 
-    //TODO change for logs and error handling
     pub async fn listen_connections(
         self: Arc<Self>,
         listener: &TcpListener,
     ) -> Result<(), NodeError> {
         loop {
             let (stream, socket_address) = listener.accept().await?;
-            tracing::info!("connected new client {socket_address}");
-            self.clone()._handle_thread(stream).await;
+            tracing::debug!("connected new client {socket_address}");
+            tokio::spawn(self.clone()._handle_thread(stream));
         }
     }
 
     pub(crate) async fn _handle_thread(self: Arc<Self>, stream: TcpStream) {
-        tokio::spawn(async move {
-            let (reader, writer) = stream.into_split();
-            let mut interval = time::interval(Duration::from_secs(
-                *self.period.lock().expect("Error while lock period"),
-            ));
-            loop {
-                self._handle_writing(&writer, &mut interval).await;
-                match self._handle_reading(&reader) {
-                    Ok(_) => continue,
-                    Err(TcpClosedError) => break,
-                    Err(_) => continue,
-                }
-            }
-        });
-    }
+        let (mut reader, writer) = stream.into_split();
+        let mut interval: Interval = time::interval(Duration::from_secs(
+            *self.period.lock().expect("Error while lock period"),
+        ));
+        loop {
+            tracing::debug!("Connections: {:?}", self.connections.lock().unwrap());
+            let mut buf: Vec<u8> = vec![0; 2048];
 
-    //TODO change for logs and error handling
-    pub(crate) fn _handle_reading(&self, reader: &OwnedReadHalf) -> Result<(), NodeError> {
-        let mut buf: Vec<u8> = vec![0; 2048];
-        match reader.try_read(&mut buf) {
-            Ok(n) => self._read_messages(n, &mut buf),
-            Err(err) => Err(NodeError::from(err)),
+            // Select to achieve concurrent reading and writing, writing with a tick period
+            tokio::select!(
+                _ = interval.tick() => {
+                    self._handle_writing(&writer).await;
+                }
+                n = reader.read(&mut buf) => {
+                    match self._read_messages(n.unwrap(), &mut buf) {
+                        Ok(_) => continue,
+                        Err(TcpClosedError) => break,
+                        Err(_) => continue,
+                    }
+                }
+            )
         }
     }
 
-    //TODO change for logs and error handling
-    pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, interval: &mut Interval) {
+    pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf) {
         if let Err(error) =
             writer.try_write(&Message64::create_random_message(&self.address, self.port))
         {
             tracing::warn!("Error while try to write {error}");
         }
-        interval.tick().await;
     }
-    
+
     fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
         tracing::debug!("Reading message of size {n}");
         if n == 0 {
