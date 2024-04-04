@@ -1,5 +1,7 @@
 use crate::errors::NodeError;
-use crate::errors::NodeError::{ItselfConnectionError, PeriodValueError, TcpClosedError};
+use crate::errors::NodeError::{
+    InvalidIpV4, ItselfConnectionError, PeriodValueError, TcpClosedError, TcpWriteError,
+};
 use crate::message::Message64;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -75,6 +77,8 @@ pub struct Node {
     address: String,
     port: u16,
     period: Mutex<u64>,
+    /// Hash map with connected addresses, if key is local listen socket value would be None,
+    /// if socket address do not listen value would be Some(listen_socket)
     connections: Mutex<HashMap<String, Option<String>>>, // TODO handling connections, may be using ids
                                                          // TODO handling messages
 }
@@ -86,16 +90,21 @@ impl Node {
 
     pub async fn connect_to(self: Arc<Self>, address_to: Option<String>) -> Result<(), NodeError> {
         if let Some(address_to) = address_to {
-            if format!("{}:{}", self.address, self.port) == address_to {
+            let local_socket: String = format!("{}:{}", self.address, self.port);
+            if local_socket == address_to {
                 return Err(ItselfConnectionError);
             }
             let stream: TcpStream = TcpStream::connect(&address_to).await?;
             tracing::debug!("connected to {}", address_to);
+            if let Err(error) = stream.try_write(local_socket.as_bytes()) {
+                tracing::warn!("Error while try write local socket {error}");
+                return Err(TcpWriteError(error));
+            }
             self.connections
                 .lock()
                 .expect("Error while lock connections")
                 .insert(address_to.clone(), None);
-            let _ = tokio::spawn(self.clone()._handle_thread(stream)).await;
+            tokio::spawn(self.clone()._handle_thread(stream));
         }
         Ok(())
     }
@@ -104,9 +113,46 @@ impl Node {
         self: Arc<Self>,
         listener: &TcpListener,
     ) -> Result<(), NodeError> {
-        loop {
-            let (stream, socket_address) = listener.accept().await?;
+        'listen: loop {
+            let (mut stream, socket_address) = listener.accept().await?;
             tracing::debug!("connected new client {socket_address}");
+            let mut buf: Vec<u8> = vec![0; 14];
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(CONNECTION_TIMEOUT)) => {
+                    tracing::warn!("Timeout waiting socket address");
+                    continue 'listen;
+                }
+                n = stream.read(&mut buf) => {
+                    match n {
+                        Ok(n) => {
+                            match Message64::read_socket_address(n, &buf) {
+                                Ok(socket_listen_address) => {
+                                    self.connections.lock().expect("Error while lock connections").insert(
+                                        socket_address.to_string(),
+                                        Some(socket_listen_address)
+                                    );
+                                }
+                                Err(TcpClosedError) => {
+                                    tracing::warn!("Connection closed");
+                                    continue 'listen;
+                                }
+                                Err(InvalidIpV4) => {
+                                    tracing::warn!("Socket sent invalid Ip v4 address");
+                                    continue 'listen;
+                                }
+                                _ => {
+                                    tracing::error!("Unexpected error");
+                                    continue 'listen;
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("Error while reading message {err}");
+                            continue 'listen;
+                        }
+                    }
+                }
+            }
             tokio::spawn(self.clone()._handle_thread(stream));
         }
     }
@@ -116,7 +162,7 @@ impl Node {
         let mut interval: Interval = time::interval(Duration::from_secs(
             *self.period.lock().expect("Error while lock period"),
         ));
-        loop {
+        'handle: loop {
             tracing::debug!("Connections: {:?}", self.connections.lock().unwrap());
             let mut buf: Vec<u8> = vec![0; 2048];
 
@@ -126,11 +172,20 @@ impl Node {
                     self._handle_writing(&writer).await;
                 }
                 n = reader.read(&mut buf) => {
-                    match self._read_messages(n.unwrap(), &mut buf) {
-                        Ok(_) => continue,
-                        Err(TcpClosedError) => break,
-                        Err(_) => continue,
+                    match n {
+                        Ok(n) => {
+                            match self._read_messages(n, &mut buf) {
+                                Ok(_) => continue 'handle,
+                                Err(TcpClosedError) => break 'handle,
+                                Err(_) => continue 'handle,
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("Error while reading message {err}");
+                            continue 'handle;
+                        }
                     }
+
                 }
             )
         }

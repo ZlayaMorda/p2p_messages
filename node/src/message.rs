@@ -1,4 +1,7 @@
+use crate::errors::NodeError;
+use crate::errors::NodeError::{InvalidIpV4, TcpClosedError};
 use chrono::Utc;
+use regex::Regex;
 
 /// implemented only for a 64-bit memory systems
 pub struct Message64 {}
@@ -30,6 +33,19 @@ impl Message64 {
             Self::_handle_random_message(&message);
             buf.drain(..8 + msg_len);
         }
+    }
+
+    pub(crate) fn read_socket_address(n: usize, buf: &Vec<u8>) -> Result<String, NodeError> {
+        if n == 0 {
+            tracing::warn!("Connection closed");
+            return Err(TcpClosedError);
+        }
+        let re = Regex::new(r"^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$").expect("Pattern should be valid");
+        let message: String = String::from_utf8_lossy(buf).trim().to_string();
+        if re.is_match(&message) {
+            return Ok(message);
+        }
+        Err(InvalidIpV4)
     }
 
     fn _handle_random_message(message: &str) {
