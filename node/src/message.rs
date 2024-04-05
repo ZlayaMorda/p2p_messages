@@ -3,7 +3,7 @@ use crate::errors::NodeError::{InvalidIpV4, TcpClosedError};
 use chrono::Utc;
 use regex::Regex;
 
-/// implemented only for a 64-bit memory systems and IpV4
+/// implemented only for a 64-bit memory systems and IPv4
 /// 
 /// Modes:
 ///     0 - first connection message, should ask other peers addresses to connect

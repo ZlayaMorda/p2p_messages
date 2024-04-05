@@ -81,7 +81,7 @@ impl NodeBuilder {
 }
 
 /// Peer struct, handle peer data and connection logic
-/// Implemented for IpV4 and 64-bit memory systems
+/// Implemented for IPv4 and 64-bit memory systems
 #[derive(Debug)]
 pub struct Node {
     /// Node listen address
