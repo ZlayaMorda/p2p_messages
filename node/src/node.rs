@@ -266,6 +266,7 @@ impl Node {
     }
 
     /// Read shared connections and store to HashMap
+    /// Read more about modes in [Message64]
     async fn read_and_store_connections(&self, stream: &mut TcpStream) -> Result<(), NodeError> {
         let mut buf: Vec<u8> = vec![0; 15];
         loop {
@@ -304,6 +305,7 @@ impl Node {
 
     /// Read message about new connection, depending on the mode process it
     /// Share own connections
+    /// Read more about modes in [Message64]
     async fn read_and_share_connections(
         &self,
         stream: &TcpStream,

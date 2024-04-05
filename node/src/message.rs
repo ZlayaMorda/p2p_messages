@@ -4,6 +4,12 @@ use chrono::Utc;
 use regex::Regex;
 
 /// implemented only for a 64-bit memory systems and IpV4
+/// 
+/// Modes:
+///     0 - first connection message, should ask other peers addresses to connect
+///     1 - connect to rest peers, do not need share with other peers
+///     2 - last address, need to stop reading shared addresses
+///     3 - do not connect to any addresses, need to stop reading shared addresses
 pub struct Message64 {}
 
 impl Message64 {
