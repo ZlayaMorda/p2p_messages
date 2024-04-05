@@ -3,6 +3,7 @@ use node::errors::NodeError;
 use node::node::{Node, NodeBuilder};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tracing::Level;
 
 #[derive(Parser, Debug)]
@@ -39,7 +40,7 @@ async fn main() -> Result<(), NodeError> {
 
     let listener: TcpListener = node.bind_address().await?;
 
-    node.clone().connect_to(args.connect).await?;
-    node.listen_connections(&listener).await?;
+    Arc::clone(&node).connect_to(args.connect).await?;
+    Arc::clone(&node).listen_connections(&listener).await?;
     Ok(())
 }

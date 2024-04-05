@@ -6,7 +6,7 @@ use crate::message::Message64;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
@@ -94,17 +94,72 @@ impl Node {
             if local_socket == address_to {
                 return Err(ItselfConnectionError);
             }
-            let stream: TcpStream = TcpStream::connect(&address_to).await?;
+            let mut stream: TcpStream = TcpStream::connect(&address_to).await?;
             tracing::debug!("connected to {}", address_to);
-            if let Err(error) = stream.try_write(local_socket.as_bytes()) {
-                tracing::warn!("Error while try write local socket {error}");
-                return Err(TcpWriteError(error));
+            self.try_write(
+                &stream,
+                &Message64::create_connect_message(&local_socket, 0_u8),
+            )?;
+
+            self.read_and_store_connections(&mut stream).await?;
+
+            for (socket, _) in self
+                .connections
+                .lock()
+                .expect("Error while lock connections")
+                .iter()
+            {
+                let stream_connection: TcpStream = TcpStream::connect(&socket).await?;
+                self.try_write(
+                    &stream_connection,
+                    &Message64::create_connect_message(&local_socket, 1_u8),
+                )?;
+                tokio::spawn(Arc::clone(&self)._handle_thread(stream_connection));
             }
             self.connections
                 .lock()
                 .expect("Error while lock connections")
                 .insert(address_to.clone(), None);
-            tokio::spawn(self.clone()._handle_thread(stream));
+            tokio::spawn(Arc::clone(&self).clone()._handle_thread(stream));
+        }
+        Ok(())
+    }
+
+    async fn read_and_store_connections(&self, stream: &mut TcpStream) -> Result<(), NodeError> {
+        let mut buf: Vec<u8> = vec![0; 15];
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(n) => match Message64::read_socket_address(n, &buf) {
+                    Ok((mode, message)) => match mode {
+                        1_u8 => {
+                            self.connections
+                                .lock()
+                                .expect("Error while lock connections")
+                                .insert(message, None);
+                            continue;
+                        }
+                        2_u8 => {
+                            self.connections
+                                .lock()
+                                .expect("Error while lock connections")
+                                .insert(message, None);
+                            break;
+                        }
+                        3_u8 => {
+                            break;
+                        }
+                        num => {
+                            tracing::error!("Unexpected mode number {num}");
+                            continue;
+                        }
+                    },
+                    Err(err) => return Err(err),
+                },
+                Err(err) => {
+                    tracing::warn!("Error while reading message {err}");
+                    continue;
+                }
+            }
         }
         Ok(())
     }
@@ -116,7 +171,7 @@ impl Node {
         'listen: loop {
             let (mut stream, socket_address) = listener.accept().await?;
             tracing::debug!("connected new client {socket_address}");
-            let mut buf: Vec<u8> = vec![0; 14];
+            let mut buf: Vec<u8> = vec![0; 15];
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(CONNECTION_TIMEOUT)) => {
                     tracing::warn!("Timeout waiting socket address");
@@ -126,23 +181,53 @@ impl Node {
                     match n {
                         Ok(n) => {
                             match Message64::read_socket_address(n, &buf) {
-                                Ok(socket_listen_address) => {
+                                Ok((mode, message)) => {
+                                    match mode {
+                                        0_u8 => {
+                                            let connections = self.connections.lock().expect("Error while lock connections");
+                                            if connections.len() == 0 {
+                                                if let Err(_) = self.try_write(&stream, &Message64::create_connect_message("127.0.0.1:0000", 3_u8)) {
+                                                    drop(connections);
+                                                    continue 'listen
+                                                }
+                                            } else {
+                                                let mut iter = connections.iter().peekable();
+                                                let mut mode: u8 = 1_u8;
+                                                let mut message: Vec<u8>;
+                                                while let Some(item) = iter.next() {
+                                                    if iter.peek().is_none() {
+                                                        mode = 2_u8;
+                                                    }
+                                                    if let Some(value) = item.1 {
+                                                        message = Message64::create_connect_message(value, mode);
+                                                    } else {
+                                                        message = Message64::create_connect_message(item.0, mode);
+                                                    }
+                                                    tracing::debug!("WRITE FROM LISTENER {:?}", message);
+                                                    if let Err(_) = self.try_write(&stream, &message) {
+                                                        drop(connections);
+                                                        continue 'listen
+                                                    }
+                                                }
+                                            }
+                                            drop(connections);
+                                        }
+                                        1_u8 => { } // Just connect and continue
+                                        num => {
+                                            tracing::error!("Unexpected mode number {num}");
+                                            continue 'listen;
+                                        }
+                                    }
                                     self.connections.lock().expect("Error while lock connections").insert(
                                         socket_address.to_string(),
-                                        Some(socket_listen_address)
+                                        Some(message)
                                     );
                                 }
-                                Err(TcpClosedError) => {
-                                    tracing::warn!("Connection closed");
-                                    continue 'listen;
-                                }
-                                Err(InvalidIpV4) => {
-                                    tracing::warn!("Socket sent invalid Ip v4 address");
-                                    continue 'listen;
-                                }
+                                Err(TcpClosedError) => { continue 'listen }
+                                Err(InvalidIpV4) => { continue 'listen }
                                 _ => {
                                     tracing::error!("Unexpected error");
-                                    continue 'listen;
+                                    continue 'listen
                                 }
                             }
                         }
@@ -165,11 +250,10 @@ impl Node {
         'handle: loop {
             tracing::debug!("Connections: {:?}", self.connections.lock().unwrap());
             let mut buf: Vec<u8> = vec![0; 2048];
-
             // Select to achieve concurrent reading and writing, writing with a tick period
             tokio::select!(
                 _ = interval.tick() => {
-                    self._handle_writing(&writer).await;
+                    self._handle_writing(&writer, &Message64::create_random_message(&self.address, self.port)).await;
                 }
                 n = reader.read(&mut buf) => {
                     match n {
@@ -191,10 +275,8 @@ impl Node {
         }
     }
 
-    pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf) {
-        if let Err(error) =
-            writer.try_write(&Message64::create_random_message(&self.address, self.port))
-        {
+    pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, message: &Vec<u8>) {
+        if let Err(error) = writer.try_write(message) {
             tracing::warn!("Error while try to write {error}");
         }
     }
@@ -207,6 +289,14 @@ impl Node {
         }
 
         Message64::read_messages(buf);
+        Ok(())
+    }
+
+    fn try_write(&self, stream: &TcpStream, message: &[u8]) -> Result<(), NodeError> {
+        if let Err(error) = stream.try_write(message) {
+            tracing::warn!("Error while try write {error}");
+            return Err(TcpWriteError(error));
+        }
         Ok(())
     }
 }

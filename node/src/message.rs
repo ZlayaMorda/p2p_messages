@@ -8,13 +8,27 @@ pub struct Message64 {}
 
 impl Message64 {
     pub(crate) fn create_random_message(address: &str, port: u16) -> Vec<u8> {
-        tracing::debug!("Creating message to send");
-        let str_message = format!(
+        tracing::debug!("Creating random message to send");
+        let str_message: String = format!(
             "{} - Message from {}:{}",
             Utc::now().timestamp(),
             address,
             port
         );
+        Self::create_message(str_message)
+    }
+
+    /// First digit in message is mode:
+    ///     0 - first connection message, should ask other peers addresses to connect
+    ///     1 - connect to rest peers, do not need share with other peers
+    ///     2 - last address, need to stop reading shared addresses
+    ///     3 - do not connect to any addresses, need to stop reading shared addresses
+    pub(crate) fn create_connect_message(socket: &str, mode: u8) -> Vec<u8> {
+        tracing::debug!("Creating connect message to send");
+        [&[mode], socket.as_bytes()].concat()
+    }
+
+    pub(crate) fn create_message(str_message: String) -> Vec<u8> {
         let message: &[u8] = str_message.as_bytes();
         let length: [u8; 8] = message.len().to_ne_bytes();
         [&length, message].concat()
@@ -35,17 +49,25 @@ impl Message64 {
         }
     }
 
-    pub(crate) fn read_socket_address(n: usize, buf: &Vec<u8>) -> Result<String, NodeError> {
+    /// First digit in message is mode:
+    ///     0 - first connection message, should ask other peers to connect
+    ///     1 - connect to rest peers, do not need share with other peers
+    pub(crate) fn read_socket_address(n: usize, buf: &Vec<u8>) -> Result<(u8, String), NodeError> {
         if n == 0 {
             tracing::warn!("Connection closed");
             return Err(TcpClosedError);
         }
+
         let re = Regex::new(r"^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$").expect("Pattern should be valid");
-        let message: String = String::from_utf8_lossy(buf).trim().to_string();
+        let mode = buf[0];
+        let message: String = String::from_utf8_lossy(&buf[1..]).trim().to_string();
+
         if re.is_match(&message) {
-            return Ok(message);
+            return Ok((mode, message));
+        } else {
+            tracing::warn!("Socket sent invalid Ip v4 address {} - {}", mode, message);
+            Err(InvalidIpV4)
         }
-        Err(InvalidIpV4)
     }
 
     fn _handle_random_message(message: &str) {
