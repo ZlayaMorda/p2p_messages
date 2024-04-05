@@ -3,7 +3,7 @@ use crate::errors::NodeError::{InvalidIpV4, TcpClosedError};
 use chrono::Utc;
 use regex::Regex;
 
-/// implemented only for a 64-bit memory systems
+/// implemented only for a 64-bit memory systems and IpV4
 pub struct Message64 {}
 
 impl Message64 {
@@ -28,12 +28,14 @@ impl Message64 {
         [&[mode], socket.as_bytes()].concat()
     }
 
+    /// Create message with len at the start to read stuck one
     pub(crate) fn create_message(str_message: String) -> Vec<u8> {
         let message: &[u8] = str_message.as_bytes();
         let length: [u8; 8] = message.len().to_ne_bytes();
         [&length, message].concat()
     }
 
+    /// Read message len and then payload
     pub(crate) fn read_messages(buf: &mut Vec<u8>) {
         while let Some((msg_len_bytes, rest)) = buf.split_first_chunk::<8>() {
             let msg_len: usize = usize::from_ne_bytes(*msg_len_bytes);
@@ -49,9 +51,6 @@ impl Message64 {
         }
     }
 
-    /// First digit in message is mode:
-    ///     0 - first connection message, should ask other peers to connect
-    ///     1 - connect to rest peers, do not need share with other peers
     pub(crate) fn read_socket_address(n: usize, buf: &Vec<u8>) -> Result<(u8, String), NodeError> {
         if n == 0 {
             tracing::warn!("Connection closed");

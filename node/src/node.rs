@@ -80,6 +80,8 @@ impl NodeBuilder {
     }
 }
 
+/// Peer struct, handle peer data and connection logic
+/// Implemented for IpV4 and 64-bit memory systems
 #[derive(Debug)]
 pub struct Node {
     /// Node listen address
@@ -96,10 +98,13 @@ pub struct Node {
 }
 
 impl Node {
+    /// Bind address listen to
     pub async fn bind_address(&self) -> Result<TcpListener, NodeError> {
         Ok(TcpListener::bind(format!("{}:{}", self.address, self.port)).await?)
     }
 
+    /// Connect to address and get other addresses and connect to
+    /// Spawn tokio tasks for each connection and read/write in async mode
     pub async fn connect_to(self: Arc<Self>, address_to: Option<String>) -> Result<(), NodeError> {
         if let Some(address_to) = address_to {
             let local_socket: String = format!("{}:{}", self.address, self.port);
@@ -140,6 +145,8 @@ impl Node {
         Ok(())
     }
 
+    /// Listen connections and share addresses with newcomers
+    /// Spawn tokio tasks for each connection and read/write in async mode
     pub async fn listen_connections(
         self: Arc<Self>,
         listener: &TcpListener,
@@ -172,6 +179,9 @@ impl Node {
         }
     }
 
+    /// Handle connection
+    /// Write with node period timeout
+    /// Read messages
     pub(crate) async fn _handle_thread(self: Arc<Self>, stream: TcpStream) {
         let (mut reader, writer) = stream.into_split();
         let mut interval: Interval = time::interval(Duration::from_secs(*self.get_period()));
@@ -231,6 +241,7 @@ impl Node {
         Ok(())
     }
 
+    /// Mutex handler
     fn get_connections(&self) -> MutexGuard<HashMap<String, Option<String>>> {
         match self.connections.lock() {
             Ok(guard) => guard,
@@ -242,6 +253,7 @@ impl Node {
         }
     }
 
+    /// Mutex handler
     fn get_period(&self) -> MutexGuard<u64> {
         match self.period.lock() {
             Ok(guard) => guard,
@@ -253,6 +265,7 @@ impl Node {
         }
     }
 
+    /// Read shared connections and store to HashMap
     async fn read_and_store_connections(&self, stream: &mut TcpStream) -> Result<(), NodeError> {
         let mut buf: Vec<u8> = vec![0; 15];
         loop {
@@ -288,6 +301,9 @@ impl Node {
         }
         Ok(())
     }
+
+    /// Read message about new connection, depending on the mode process it
+    /// Share own connections
     async fn read_and_share_connections(
         &self,
         stream: &TcpStream,
