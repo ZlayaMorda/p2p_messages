@@ -14,7 +14,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
 use tokio::time::Interval;
 
-
 /// NodeBuilder provides more flexible creation of Node with different input data
 pub struct NodeBuilder {
     address: String,
@@ -44,7 +43,7 @@ impl NodeBuilder {
         self.port = port;
         self
     }
-    
+
     pub fn connection_timeout(mut self, timeout: u64) -> NodeBuilder {
         self.connection_timeout = timeout;
         self
@@ -124,10 +123,15 @@ impl Node {
                         continue;
                     }
                 };
-                self.try_write(
+
+                if let Err(err) = self.try_write(
                     &stream_connection,
                     &Message64::create_connect_message(&local_socket, 1_u8),
-                )?;
+                ) {
+                    self.get_connections().remove(socket);
+                    tracing::warn!("Error while write to connect {err}");
+                    continue;
+                }
                 tokio::spawn(Arc::clone(&self)._handle_thread(stream_connection));
             }
             self.get_connections().insert(address_to.clone(), None);
@@ -184,7 +188,10 @@ impl Node {
                         Ok(n) => {
                             match self.read_messages(n, &mut buf) {
                                 Ok(_) => continue 'handle,
-                                Err(TcpClosedError) => break 'handle,
+                                Err(TcpClosedError) => {
+                                    self.get_connections().remove(&reader.peer_addr().expect("Could not get peer addr").to_string());
+                                    break 'handle
+                                }
                                 Err(_) => continue 'handle,
                             }
                         }
