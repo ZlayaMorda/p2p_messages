@@ -4,7 +4,7 @@ use crate::errors::NodeError::{
 };
 use crate::message::Message64;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
@@ -79,8 +79,7 @@ pub struct Node {
     period: Mutex<u64>,
     /// Hash map with connected addresses, if key is local listen socket value would be None,
     /// if socket address do not listen value would be Some(listen_socket)
-    connections: Mutex<HashMap<String, Option<String>>>, // TODO handling connections, may be using ids
-                                                         // TODO handling messages
+    connections: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl Node {
@@ -103,23 +102,22 @@ impl Node {
 
             self.read_and_store_connections(&mut stream).await?;
 
-            for (socket, _) in self
-                .connections
-                .lock()
-                .expect("Error while lock connections")
-                .iter()
+            for (socket, _) in self.get_connections().iter()
             {
-                let stream_connection: TcpStream = TcpStream::connect(&socket).await?;
+                let stream_connection: TcpStream = match TcpStream::connect(&socket).await {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        tracing::warn!("Error while connect to socket {error}") ;
+                        continue;
+                    }
+                };
                 self.try_write(
                     &stream_connection,
                     &Message64::create_connect_message(&local_socket, 1_u8),
                 )?;
                 tokio::spawn(Arc::clone(&self)._handle_thread(stream_connection));
             }
-            self.connections
-                .lock()
-                .expect("Error while lock connections")
-                .insert(address_to.clone(), None);
+            self.get_connections().insert(address_to.clone(), None);
             tokio::spawn(Arc::clone(&self).clone()._handle_thread(stream));
         }
         Ok(())
@@ -132,17 +130,11 @@ impl Node {
                 Ok(n) => match Message64::read_socket_address(n, &buf) {
                     Ok((mode, message)) => match mode {
                         1_u8 => {
-                            self.connections
-                                .lock()
-                                .expect("Error while lock connections")
-                                .insert(message, None);
+                            self.get_connections().insert(message, None);
                             continue;
                         }
                         2_u8 => {
-                            self.connections
-                                .lock()
-                                .expect("Error while lock connections")
-                                .insert(message, None);
+                            self.get_connections().insert(message, None);
                             break;
                         }
                         3_u8 => {
@@ -184,7 +176,7 @@ impl Node {
                                 Ok((mode, message)) => {
                                     match mode {
                                         0_u8 => {
-                                            let connections = self.connections.lock().expect("Error while lock connections");
+                                            let connections = self.get_connections();
                                             if connections.len() == 0 {
                                                 if let Err(_) = self.try_write(&stream, &Message64::create_connect_message("127.0.0.1:0000", 3_u8)) {
                                                     drop(connections);
@@ -218,7 +210,7 @@ impl Node {
                                             continue 'listen;
                                         }
                                     }
-                                    self.connections.lock().expect("Error while lock connections").insert(
+                                    self.get_connections().insert(
                                         socket_address.to_string(),
                                         Some(message)
                                     );
@@ -244,21 +236,19 @@ impl Node {
 
     pub(crate) async fn _handle_thread(self: Arc<Self>, stream: TcpStream) {
         let (mut reader, writer) = stream.into_split();
-        let mut interval: Interval = time::interval(Duration::from_secs(
-            *self.period.lock().expect("Error while lock period"),
-        ));
+        let mut interval: Interval = time::interval(Duration::from_secs(*self.get_period()));
         'handle: loop {
-            tracing::debug!("Connections: {:?}", self.connections.lock().unwrap());
+            tracing::debug!("Connections: {:?}", self.get_connections());
             let mut buf: Vec<u8> = vec![0; 2048];
             // Select to achieve concurrent reading and writing, writing with a tick period
             tokio::select!(
                 _ = interval.tick() => {
-                    self._handle_writing(&writer, &Message64::create_random_message(&self.address, self.port)).await;
+                    self.handle_writing(&writer, &Message64::create_random_message(&self.address, self.port)).await;
                 }
                 n = reader.read(&mut buf) => {
                     match n {
                         Ok(n) => {
-                            match self._read_messages(n, &mut buf) {
+                            match self.read_messages(n, &mut buf) {
                                 Ok(_) => continue 'handle,
                                 Err(TcpClosedError) => break 'handle,
                                 Err(_) => continue 'handle,
@@ -275,13 +265,13 @@ impl Node {
         }
     }
 
-    pub(crate) async fn _handle_writing(&self, writer: &OwnedWriteHalf, message: &Vec<u8>) {
+    pub(crate) async fn handle_writing(&self, writer: &OwnedWriteHalf, message: &Vec<u8>) {
         if let Err(error) = writer.try_write(message) {
             tracing::warn!("Error while try to write {error}");
         }
     }
 
-    fn _read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
+    fn read_messages(&self, n: usize, buf: &mut Vec<u8>) -> Result<(), NodeError> {
         tracing::debug!("Reading message of size {n}");
         if n == 0 {
             tracing::warn!("Connection closed");
@@ -298,5 +288,27 @@ impl Node {
             return Err(TcpWriteError(error));
         }
         Ok(())
+    }
+
+    fn get_connections(&self) -> MutexGuard<HashMap<String, Option<String>>>{
+        match self.connections.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let guard = poisoned.into_inner();
+                tracing::error!("Connections poisoned");
+                guard
+            }
+        }
+    }
+    
+    fn get_period(&self) -> MutexGuard<u64> {
+        match self.period.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                let guard = poisoned.into_inner();
+                tracing::error!("Connections poisoned");
+                guard
+            }
+        }
     }
 }
