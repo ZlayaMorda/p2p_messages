@@ -14,12 +14,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
 use tokio::time::Interval;
 
-const CONNECTION_TIMEOUT: u64 = 10;
 
 /// NodeBuilder provides more flexible creation of Node with different input data
 pub struct NodeBuilder {
     address: String,
     port: u16,
+    connection_timeout: u64,
     period: Mutex<u64>,
     connections: Mutex<HashMap<String, Option<String>>>,
 }
@@ -29,6 +29,7 @@ impl NodeBuilder {
         NodeBuilder {
             address: String::new(),
             port: 8080_u16,
+            connection_timeout: 10_u64,
             period: Mutex::new(5_u64),
             connections: Mutex::new(HashMap::new()),
         }
@@ -41,6 +42,11 @@ impl NodeBuilder {
 
     pub fn port(mut self, port: u16) -> NodeBuilder {
         self.port = port;
+        self
+    }
+    
+    pub fn connection_timeout(mut self, timeout: u64) -> NodeBuilder {
+        self.connection_timeout = timeout;
         self
     }
 
@@ -68,6 +74,7 @@ impl NodeBuilder {
         Node {
             address: self.address,
             port: self.port,
+            connection_timeout: self.connection_timeout,
             period: self.period,
             connections: self.connections,
         }
@@ -80,6 +87,8 @@ pub struct Node {
     address: String,
     /// Node listen port
     port: u16,
+    /// Time wait for connection data
+    connection_timeout: u64,
     /// Message sending period
     period: Mutex<u64>,
     /// Hash map with connected addresses, if key is local listen socket value would be None,
@@ -137,7 +146,7 @@ impl Node {
             let mut buf: Vec<u8> = vec![0; 15];
             // select to achieve concurrent sleeping and reading
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(CONNECTION_TIMEOUT)) => {
+                _ = tokio::time::sleep(Duration::from_secs(self.connection_timeout)) => {
                     tracing::warn!("Timeout waiting socket address");
                     continue 'listen;
                 }
