@@ -16,4 +16,6 @@ pub enum NodeError {
     TracingSubscriberError(#[from] tracing::subscriber::SetGlobalDefaultError),
     #[error("Invalid ip v4 address")]
     InvalidIpV4,
+    #[error("Unexpected mode number")]
+    UnexpectedMode,
 }

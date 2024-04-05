@@ -1,9 +1,9 @@
 use clap::Parser;
 use node::errors::NodeError;
 use node::node::{Node, NodeBuilder};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
 use tracing::Level;
 
 #[derive(Parser, Debug)]
@@ -18,6 +18,9 @@ struct Args {
     /// Socket address to connect
     #[arg(short, long)]
     connect: Option<String>,
+    /// Tracing level
+    #[arg(short, long, default_value_t = String::from("debug"))]
+    level: String,
 }
 
 #[tokio::main]
@@ -25,7 +28,10 @@ async fn main() -> Result<(), NodeError> {
     let args: Args = Args::parse();
 
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(
+            Level::from_str(&args.level)
+                .expect("Not correct level value, choose from: error, warn, info, debug, trace"),
+        )
         .finish();
 
     tracing::subscriber::set_global_default(subscriber)?;

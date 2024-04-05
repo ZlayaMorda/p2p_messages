@@ -1,12 +1,14 @@
 use crate::errors::NodeError;
 use crate::errors::NodeError::{
     InvalidIpV4, ItselfConnectionError, PeriodValueError, TcpClosedError, TcpWriteError,
+    UnexpectedMode,
 };
 use crate::message::Message64;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time;
@@ -74,8 +76,11 @@ impl NodeBuilder {
 
 #[derive(Debug)]
 pub struct Node {
+    /// Node listen address
     address: String,
+    /// Node listen port
     port: u16,
+    /// Message sending period
     period: Mutex<u64>,
     /// Hash map with connected addresses, if key is local listen socket value would be None,
     /// if socket address do not listen value would be Some(listen_socket)
@@ -102,12 +107,11 @@ impl Node {
 
             self.read_and_store_connections(&mut stream).await?;
 
-            for (socket, _) in self.get_connections().iter()
-            {
+            for (socket, _) in self.get_connections().iter() {
                 let stream_connection: TcpStream = match TcpStream::connect(&socket).await {
                     Ok(stream) => stream,
                     Err(error) => {
-                        tracing::warn!("Error while connect to socket {error}") ;
+                        tracing::warn!("Error while connect to socket {error}");
                         continue;
                     }
                 };
@@ -123,39 +127,6 @@ impl Node {
         Ok(())
     }
 
-    async fn read_and_store_connections(&self, stream: &mut TcpStream) -> Result<(), NodeError> {
-        let mut buf: Vec<u8> = vec![0; 15];
-        loop {
-            match stream.read(&mut buf).await {
-                Ok(n) => match Message64::read_socket_address(n, &buf) {
-                    Ok((mode, message)) => match mode {
-                        1_u8 => {
-                            self.get_connections().insert(message, None);
-                            continue;
-                        }
-                        2_u8 => {
-                            self.get_connections().insert(message, None);
-                            break;
-                        }
-                        3_u8 => {
-                            break;
-                        }
-                        num => {
-                            tracing::error!("Unexpected mode number {num}");
-                            continue;
-                        }
-                    },
-                    Err(err) => return Err(err),
-                },
-                Err(err) => {
-                    tracing::warn!("Error while reading message {err}");
-                    continue;
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub async fn listen_connections(
         self: Arc<Self>,
         listener: &TcpListener,
@@ -164,6 +135,7 @@ impl Node {
             let (mut stream, socket_address) = listener.accept().await?;
             tracing::debug!("connected new client {socket_address}");
             let mut buf: Vec<u8> = vec![0; 15];
+            // select to achieve concurrent sleeping and reading
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(CONNECTION_TIMEOUT)) => {
                     tracing::warn!("Timeout waiting socket address");
@@ -172,55 +144,8 @@ impl Node {
                 n = stream.read(&mut buf) => {
                     match n {
                         Ok(n) => {
-                            match Message64::read_socket_address(n, &buf) {
-                                Ok((mode, message)) => {
-                                    match mode {
-                                        0_u8 => {
-                                            let connections = self.get_connections();
-                                            if connections.len() == 0 {
-                                                if let Err(_) = self.try_write(&stream, &Message64::create_connect_message("127.0.0.1:0000", 3_u8)) {
-                                                    drop(connections);
-                                                    continue 'listen
-                                                }
-                                            } else {
-                                                let mut iter = connections.iter().peekable();
-                                                let mut mode: u8 = 1_u8;
-                                                let mut message: Vec<u8>;
-                                                while let Some(item) = iter.next() {
-                                                    if iter.peek().is_none() {
-                                                        mode = 2_u8;
-                                                    }
-                                                    if let Some(value) = item.1 {
-                                                        message = Message64::create_connect_message(value, mode);
-                                                    } else {
-                                                        message = Message64::create_connect_message(item.0, mode);
-                                                    }
-                                                    tracing::debug!("WRITE FROM LISTENER {:?}", message);
-                                                    if let Err(_) = self.try_write(&stream, &message) {
-                                                        drop(connections);
-                                                        continue 'listen
-                                                    }
-                                                }
-                                            }
-                                            drop(connections);
-                                        }
-                                        1_u8 => { } // Just connect and continue
-                                        num => {
-                                            tracing::error!("Unexpected mode number {num}");
-                                            continue 'listen;
-                                        }
-                                    }
-                                    self.get_connections().insert(
-                                        socket_address.to_string(),
-                                        Some(message)
-                                    );
-                                }
-                                Err(TcpClosedError) => { continue 'listen }
-                                Err(InvalidIpV4) => { continue 'listen }
-                                _ => {
-                                    tracing::error!("Unexpected error");
-                                    continue 'listen
-                                }
+                            if let Err(_) = self.read_and_share_connections(&stream, &socket_address, n, &buf).await {
+                                continue 'listen;
                             }
                         }
                         Err(err) => {
@@ -290,7 +215,7 @@ impl Node {
         Ok(())
     }
 
-    fn get_connections(&self) -> MutexGuard<HashMap<String, Option<String>>>{
+    fn get_connections(&self) -> MutexGuard<HashMap<String, Option<String>>> {
         match self.connections.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -300,7 +225,7 @@ impl Node {
             }
         }
     }
-    
+
     fn get_period(&self) -> MutexGuard<u64> {
         match self.period.lock() {
             Ok(guard) => guard,
@@ -310,5 +235,99 @@ impl Node {
                 guard
             }
         }
+    }
+
+    async fn read_and_store_connections(&self, stream: &mut TcpStream) -> Result<(), NodeError> {
+        let mut buf: Vec<u8> = vec![0; 15];
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(n) => match Message64::read_socket_address(n, &buf) {
+                    Ok((mode, message)) => match mode {
+                        1_u8 => {
+                            // Just connect
+                            self.get_connections().insert(message, None);
+                            continue;
+                        }
+                        2_u8 => {
+                            // Last one to just connect
+                            self.get_connections().insert(message, None);
+                            break;
+                        }
+                        3_u8 => {
+                            // Empty connections
+                            break;
+                        }
+                        num => {
+                            tracing::error!("Unexpected mode number {num}");
+                            continue;
+                        }
+                    },
+                    Err(err) => return Err(err),
+                },
+                Err(err) => {
+                    tracing::warn!("Error while reading message {err}");
+                    continue;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn read_and_share_connections(
+        &self,
+        stream: &TcpStream,
+        socket_address: &SocketAddr,
+        n: usize,
+        buf: &Vec<u8>,
+    ) -> Result<(), NodeError> {
+        match Message64::read_socket_address(n, &buf) {
+            Ok((mode, message)) => {
+                match mode {
+                    0_u8 => {
+                        self.share_connections(&stream).await?;
+                    }
+                    1_u8 => {} // Just connect and continue
+                    num => {
+                        tracing::error!("Unexpected mode number {num}");
+                        return Err(UnexpectedMode);
+                    }
+                }
+                self.get_connections()
+                    .insert(socket_address.to_string(), Some(message));
+                Ok(())
+            }
+            Err(TcpClosedError) => Err(TcpClosedError),
+            Err(InvalidIpV4) => Err(InvalidIpV4),
+            Err(err) => {
+                tracing::error!("Unexpected error");
+                Err(err)
+            }
+        }
+    }
+
+    async fn share_connections(&self, stream: &TcpStream) -> Result<(), NodeError> {
+        let connections = self.get_connections();
+        if connections.len() == 0 {
+            self.try_write(
+                &stream,
+                &Message64::create_connect_message("127.0.0.1:0000", 3_u8), // empty mode
+            )?;
+        } else {
+            let mut iter = connections.iter().peekable();
+            let mut mode: u8 = 1_u8; // connection mode
+            let mut message: Vec<u8>;
+            while let Some(item) = iter.next() {
+                if iter.peek().is_none() {
+                    mode = 2_u8; // end mode
+                }
+                if let Some(value) = item.1 {
+                    message = Message64::create_connect_message(value, mode);
+                } else {
+                    message = Message64::create_connect_message(item.0, mode);
+                }
+                tracing::debug!("WRITE FROM LISTENER {:?}", message);
+                self.try_write(&stream, &message)?
+            }
+        }
+        Ok(())
     }
 }
