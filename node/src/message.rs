@@ -1,15 +1,11 @@
+use std::fmt::{Display, Formatter};
 use crate::errors::NodeError;
-use crate::errors::NodeError::{InvalidIpV4, TcpClosedError};
+use crate::errors::NodeError::{InvalidIpV4, TcpClosedError, UnexpectedMode};
 use chrono::Utc;
 use regex::Regex;
 
 /// implemented only for a 64-bit memory systems and IPv4
-/// 
-/// Modes:
-///     0 - first connection message, should ask other peers addresses to connect
-///     1 - connect to rest peers, do not need share with other peers
-///     2 - last address, need to stop reading shared addresses
-///     3 - do not connect to any addresses, need to stop reading shared addresses
+///
 pub struct Message64 {}
 
 impl Message64 {
@@ -25,13 +21,10 @@ impl Message64 {
     }
 
     /// First digit in message is mode:
-    ///     0 - first connection message, should ask other peers addresses to connect
-    ///     1 - connect to rest peers, do not need share with other peers
-    ///     2 - last address, need to stop reading shared addresses
-    ///     3 - do not connect to any addresses, need to stop reading shared addresses
-    pub(crate) fn create_connect_message(socket: &str, mode: u8) -> Vec<u8> {
+    /// Modes [Mode]
+    pub(crate) fn create_connect_message(socket: &str, mode: Mode) -> Vec<u8> {
         tracing::debug!("Creating connect message to send");
-        [&[mode], socket.as_bytes()].concat()
+        [&[mode.value()], socket.as_bytes()].concat()
     }
 
     /// Create message with len at the start to read stuck one
@@ -57,14 +50,14 @@ impl Message64 {
         }
     }
 
-    pub(crate) fn read_socket_address(n: usize, buf: &Vec<u8>) -> Result<(u8, String), NodeError> {
+    pub(crate) fn read_socket_address(n: usize, buf: &Vec<u8>) -> Result<(Mode, String), NodeError> {
         if n == 0 {
             tracing::warn!("Connection closed");
             return Err(TcpClosedError);
         }
 
         let re = Regex::new(r"^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$").expect("Pattern should be valid");
-        let mode = buf[0];
+        let mode = Mode::from_value(buf[0])?;
         let message: String = String::from_utf8_lossy(&buf[1..]).trim().to_string();
 
         if re.is_match(&message) {
@@ -77,5 +70,52 @@ impl Message64 {
 
     fn _handle_random_message(message: &str) {
         println!("{}", message);
+    }
+}
+
+/// Modes for process messages between nodes
+#[derive(Debug, Copy, Clone)]
+#[repr(u8)]
+pub enum Mode {
+    /// 0 - first connection message, should ask other peers addresses to connect
+    ShareConnection,
+    /// 1 - connect to rest peers, do not need share with other peers
+    Connection,
+    /// 2 - last address, need to stop reading shared addresses
+    LastAddress,
+    /// 3 - do not connect to any addresses, need to stop reading shared addresses
+    EmptyConnections    
+}
+
+impl Mode {
+    fn value(&self) -> u8 {
+        match *self {
+            Mode::ShareConnection => 0,
+            Mode::Connection => 1,
+            Mode::LastAddress => 2,
+            Mode::EmptyConnections => 3,
+        }
+    }
+
+    fn from_value(value: u8) -> Result<Mode, NodeError> {
+        match value {
+            0 => Ok(Mode::ShareConnection),
+            1 => Ok(Mode::Connection),
+            2 => Ok(Mode::LastAddress),
+            3 => Ok(Mode::EmptyConnections),
+            value => Err(UnexpectedMode(value)),
+        }
+    }
+}
+
+impl Display for Mode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mode_str = match *self {
+            Mode::ShareConnection => "ShareConnection 0",
+            Mode::Connection => "Connection 1",
+            Mode::LastAddress => "LastAddress 2",
+            Mode::EmptyConnections => "EmptyConnections 3",
+        };
+        write!(f, "{}", mode_str)
     }
 }
