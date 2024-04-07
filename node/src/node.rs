@@ -3,7 +3,7 @@ use crate::errors::NodeError::{
     InvalidIpV4, ItselfConnectionError, PeriodValueError, TcpClosedError, TcpWriteError,
     UnexpectedMode,
 };
-use crate::message::Message64;
+use crate::message::{Message64, Mode};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -115,7 +115,7 @@ impl Node {
             tracing::debug!("connected to {}", address_to);
             self.try_write(
                 &stream,
-                &Message64::create_connect_message(&local_socket, 0_u8),
+                &Message64::create_connect_message(&local_socket, Mode::ShareConnection),
             )?;
 
             self.read_and_store_connections(&mut stream).await?;
@@ -131,7 +131,7 @@ impl Node {
 
                 if let Err(err) = self.try_write(
                     &stream_connection,
-                    &Message64::create_connect_message(&local_socket, 1_u8),
+                    &Message64::create_connect_message(&local_socket, Mode::Connection),
                 ) {
                     self.get_connections().remove(socket);
                     tracing::warn!("Error while write to connect {err}");
@@ -273,26 +273,29 @@ impl Node {
             match stream.read(&mut buf).await {
                 Ok(n) => match Message64::read_socket_address(n, &buf) {
                     Ok((mode, message)) => match mode {
-                        1_u8 => {
+                        Mode::Connection => {
                             // Just connect
                             self.get_connections().insert(message, None);
                             continue;
                         }
-                        2_u8 => {
+                        Mode::LastAddress => {
                             // Last one to just connect
                             self.get_connections().insert(message, None);
                             break;
                         }
-                        3_u8 => {
+                        Mode::EmptyConnections => {
                             // Empty connections
                             break;
                         }
                         num => {
-                            tracing::error!("Unexpected mode number {num}");
+                            tracing::warn!("Unexpected mode number {num}");
                             continue;
                         }
                     },
-                    Err(err) => return Err(err),
+                    Err(err) => {
+                        tracing::error!("Error while read and store connections {err}");
+                        return Err(err)
+                    },
                 },
                 Err(err) => {
                     tracing::warn!("Error while reading message {err}");
@@ -316,23 +319,20 @@ impl Node {
         match Message64::read_socket_address(n, &buf) {
             Ok((mode, message)) => {
                 match mode {
-                    0_u8 => {
+                    Mode::ShareConnection => {
                         self.share_connections(&stream).await?;
                     }
-                    1_u8 => {} // Just connect and continue
+                    Mode::Connection => {} // Just connect and continue
                     num => {
-                        tracing::error!("Unexpected mode number {num}");
-                        return Err(UnexpectedMode);
+                        tracing::warn!("Unexpected mode number {num}");
                     }
                 }
                 self.get_connections()
                     .insert(socket_address.to_string(), Some(message));
                 Ok(())
             }
-            Err(TcpClosedError) => Err(TcpClosedError),
-            Err(InvalidIpV4) => Err(InvalidIpV4),
             Err(err) => {
-                tracing::error!("Unexpected error");
+                tracing::error!("Error while read and share connections {err}");
                 Err(err)
             }
         }
@@ -343,15 +343,15 @@ impl Node {
         if connections.len() == 0 {
             self.try_write(
                 &stream,
-                &Message64::create_connect_message("127.0.0.1:0000", 3_u8), // empty mode
+                &Message64::create_connect_message("127.0.0.1:0000", Mode::EmptyConnections), // empty mode
             )?;
         } else {
             let mut iter = connections.iter().peekable();
-            let mut mode: u8 = 1_u8; // connection mode
+            let mut mode = Mode::Connection;
             let mut message: Vec<u8>;
             while let Some(item) = iter.next() {
                 if iter.peek().is_none() {
-                    mode = 2_u8; // end mode
+                    mode = Mode::LastAddress; // end mode
                 }
                 if let Some(value) = item.1 {
                     message = Message64::create_connect_message(value, mode);
